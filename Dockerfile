@@ -1,41 +1,29 @@
-# Build stage
-FROM gradle:8.7-jdk21 AS build
+#
+# Multi-stage build for Spring Boot (Gradle) app
+#
 
+FROM eclipse-temurin:21-jdk AS build
 WORKDIR /app
 
-# Copy Gradle files
-COPY build.gradle settings.gradle ./
+# Copy only what we need for a reproducible Gradle build
+COPY gradlew gradlew.bat build.gradle settings.gradle /app/
+COPY gradle /app/gradle
 
-# Download dependencies (cached layer)
-RUN gradle dependencies --no-daemon || true
+# Copy sources
+COPY src /app/src
 
-# Copy source code
-COPY src ./src
+# Build a runnable jar (skip tests in CI image build unless you have DB-independent tests)
+RUN chmod +x /app/gradlew && /app/gradlew clean bootJar -x test
 
-# Build application
-RUN gradle clean build -x test --no-daemon
-
-# Runtime stage
-FROM eclipse-temurin:21-jre-alpine
-
+FROM eclipse-temurin:21-jre AS runtime
 WORKDIR /app
 
-# Install wget for health check
-RUN apk add --no-cache wget
+ENV TZ=UTC
+ENV JAVA_OPTS=""
 
-# Create non-root user
-RUN addgroup -S spring && adduser -S spring -G spring
-USER spring:spring
+COPY --from=build /app/build/libs/*.jar /app/app.jar
 
-# Copy JAR from build stage
-COPY --from=build --chown=spring:spring /app/build/libs/*.jar app.jar
-
-# Expose port
 EXPOSE 8080
 
-# Health check (checks root endpoint)
-HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
-
-# Run application
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# Use sh -c so JAVA_OPTS is expanded
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]
